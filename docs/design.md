@@ -127,6 +127,11 @@ CREATE TABLE task_group_flow (
       "config": {
         "service": "PaymentService",
         "method": "deduct"
+      },
+      "retry": {
+        "strategy": "auto",
+        "max_attempts": 3,
+        "interval": 5
       }
     },
     {
@@ -136,10 +141,34 @@ CREATE TABLE task_group_flow (
       "description": "发送通知",
       "config": {
         "topic": "payment.completed"
+      },
+      "retry": {
+        "strategy": "manual"
+      }
+    },
+    {
+      "id": "task_003",
+      "task_name": "http_request",
+      "description": "HTTP 回调",
+      "config": {
+        "url": "https://example.com/callback",
+        "method": "POST"
+      },
+      "retry": {
+        "strategy": "no_retry"
       }
     }
   ]
 }
+```
+
+**重试策略说明：**
+
+| 策略 | 说明 |
+|-----|------|
+| `auto` | 自动重试，根据 max_attempts 和 interval 配置 |
+| `manual` | 手动重试，需要人工触发 |
+| `no_retry` | 不重试，直接标记失败 |
 ```
 
 #### 3.2.2 task_group_instance - 事务流实例表

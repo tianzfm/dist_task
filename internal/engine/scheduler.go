@@ -21,6 +21,13 @@ type FlowTask struct {
 	Description string          `json:"description"`
 	DependsOn   []string        `json:"depends_on"`
 	Config      json.RawMessage `json:"config"`
+	Retry       *RetryConfig    `json:"retry,omitempty"`
+}
+
+type RetryConfig struct {
+	Strategy    string `json:"strategy"`               // manual / auto / no_retry
+	MaxAttempts int    `json:"max_attempts,omitempty"` // 最大重试次数
+	Interval    int    `json:"interval,omitempty"`     // 重试间隔（秒）
 }
 
 type FlowDefinition struct {
@@ -164,6 +171,21 @@ func (e *Engine) executeTask(ctx context.Context, groupID string, task *FlowTask
 		taskRecord.ErrorMessage = err.Error()
 		e.taskRepo.Update(taskRecord)
 
+		retryStrategy := "manual"
+		maxAttempts := 3
+		interval := 60
+
+		if task.Retry != nil {
+			retryStrategy = task.Retry.Strategy
+			if task.Retry.MaxAttempts > 0 {
+				maxAttempts = task.Retry.MaxAttempts
+			}
+			if task.Retry.Interval > 0 {
+				interval = task.Retry.Interval
+			}
+		}
+
+		nextAt := time.Now().Add(time.Duration(interval) * time.Second)
 		e.exceptionRepo.Create(&model.ExceptionRecord{
 			GroupID:       groupID,
 			GroupName:     task.Description,
@@ -171,7 +193,10 @@ func (e *Engine) executeTask(ctx context.Context, groupID string, task *FlowTask
 			TaskName:      task.TaskName,
 			ErrorType:     1,
 			ErrorMessage:  err.Error(),
-			RetryStrategy: "manual",
+			RetryStrategy: retryStrategy,
+			RetryMax:      maxAttempts,
+			RetryInterval: interval,
+			RetryNextAt:   &nextAt,
 			OccurredAt:    time.Now(),
 		})
 
