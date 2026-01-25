@@ -1,0 +1,32 @@
+# Application
+app_name = "dist_task"
+host = "0.0.0.0"
+port = 8080
+
+# Database
+[database]
+host = "127.0.0.1"
+port = 3306
+username = "root"
+password = ""
+name = "dist_task"
+max_open_conns = 25
+max_idle_conns = 5
+conn_max_lifetime = 300
+
+# RocketMQ
+[rocketmq]
+namesrv = "127.0.0.1:9876
+producer_group = "dist_task_producer"
+consumer_group = "dist_task_consumer"
+
+# Log
+[log]
+level = "info"
+format = "json"
+output = "stdout"
+
+# Retry
+[retry]
+default_max_attempts = 3
+default_interval = 5
