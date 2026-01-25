@@ -168,7 +168,11 @@ func (h *Handler) StartTransaction(c *gin.Context) {
 	// 异步执行
 	go func() {
 		ctx := c.Request.Context()
-		if err := h.engine.Execute(ctx, instance, flow); err != nil {
+		params := req.Params
+		if params == nil {
+			params = make(map[string]interface{})
+		}
+		if err := h.engine.Execute(ctx, instance, flow, params); err != nil {
 			logger.Error().Err(err).Str("instance_id", req.InstanceID).Msg("execute failed")
 		}
 	}()

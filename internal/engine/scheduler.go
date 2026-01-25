@@ -53,7 +53,7 @@ func NewEngine(
 	}
 }
 
-func (e *Engine) Execute(ctx context.Context, instance *model.TaskGroupInstance, flowDef *model.TaskGroupFlow) error {
+func (e *Engine) Execute(ctx context.Context, instance *model.TaskGroupInstance, flowDef *model.TaskGroupFlow, globalParams map[string]interface{}) error {
 	var flowDefinition FlowDefinition
 	if err := json.Unmarshal([]byte(flowDef.Definition), &flowDefinition); err != nil {
 		return fmt.Errorf("parse flow definition failed: %w", err)
@@ -76,7 +76,7 @@ func (e *Engine) Execute(ctx context.Context, instance *model.TaskGroupInstance,
 		wg.Add(1)
 		go func(t FlowTask) {
 			defer wg.Done()
-			if err := e.executeTask(ctx, instance.ID, &t, taskMap); err != nil {
+			if err := e.executeTask(ctx, instance.ID, &t, taskMap, globalParams); err != nil {
 				errCh <- err
 			}
 		}(flowDefinition.Tasks[i])
@@ -97,7 +97,7 @@ func (e *Engine) Execute(ctx context.Context, instance *model.TaskGroupInstance,
 	return e.instanceRepo.Update(instance)
 }
 
-func (e *Engine) executeTask(ctx context.Context, groupID string, task *FlowTask, taskMap map[string]*FlowTask) error {
+func (e *Engine) executeTask(ctx context.Context, groupID string, task *FlowTask, taskMap map[string]*FlowTask, globalParams map[string]interface{}) error {
 	taskDef, err := taskdef.GetTaskDefinition(task.TaskName)
 	if err != nil {
 		return err
@@ -132,6 +132,25 @@ func (e *Engine) executeTask(ctx context.Context, groupID string, task *FlowTask
 
 	logger.Info().Str("task_id", taskRecord.ID).Str("task_name", task.TaskName).Msg("task started")
 
+	taskParams, err := e.extractTaskParams(task.TaskName, globalParams)
+	if err != nil {
+		taskRecord.Status = "failed"
+		taskRecord.ErrorMessage = err.Error()
+		e.taskRepo.Update(taskRecord)
+
+		e.logRepo.Create(&model.ExecutionLog{
+			TaskID:  taskRecord.ID,
+			GroupID: groupID,
+			Action:  "failed",
+			Message: err.Error(),
+		})
+
+		return err
+	}
+
+	taskConfig, _ := json.Marshal(taskDef.Config)
+	mergedConfig := e.mergeConfig(taskConfig, task.Config)
+
 	taskExecutor, err := e.executorFactory.Create(taskDef.Type)
 	if err != nil {
 		taskRecord.Status = "failed"
@@ -140,10 +159,7 @@ func (e *Engine) executeTask(ctx context.Context, groupID string, task *FlowTask
 		return err
 	}
 
-	taskConfig, _ := json.Marshal(taskDef.Config)
-	mergedConfig := e.mergeConfig(taskConfig, task.Config)
-
-	if err := taskExecutor.Execute(ctx, mergedConfig, map[string]interface{}{}); err != nil {
+	if err := taskExecutor.Execute(ctx, mergedConfig, taskParams); err != nil {
 		taskRecord.Status = "failed"
 		taskRecord.ErrorMessage = err.Error()
 		e.taskRepo.Update(taskRecord)
@@ -184,6 +200,35 @@ func (e *Engine) executeTask(ctx context.Context, groupID string, task *FlowTask
 	logger.Info().Str("task_id", taskRecord.ID).Str("task_name", task.TaskName).Msg("task completed")
 
 	return nil
+}
+
+func (e *Engine) extractTaskParams(taskName string, globalParams map[string]interface{}) (map[string]interface{}, error) {
+	validator := taskdef.NewValidator()
+
+	taskDef, err := taskdef.GetTaskDefinition(taskName)
+	if err != nil {
+		return nil, err
+	}
+
+	if taskDef == nil {
+		return globalParams, nil
+	}
+
+	if len(taskDef.InputFields) == 0 {
+		return globalParams, nil
+	}
+
+	taskParams, ok := globalParams[taskName].(map[string]interface{})
+	if !ok {
+		taskParams = make(map[string]interface{})
+	}
+
+	validatedParams, err := validator.Validate(taskDef.InputFields, taskParams)
+	if err != nil {
+		return nil, err
+	}
+
+	return validatedParams, nil
 }
 
 func (e *Engine) mergeConfig(baseConfig []byte, taskConfig json.RawMessage) []byte {
