@@ -12,6 +12,7 @@ import (
 	"dist_task/internal/engine"
 	"dist_task/internal/engine/executor"
 	"dist_task/internal/repository"
+	"dist_task/internal/retry"
 	"dist_task/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -44,7 +45,10 @@ func main() {
 
 	eng := engine.NewEngine(instanceRepo, taskRepo, exceptionRepo, logRepo, executorFactory)
 
-	h := handler.NewHandler(flowRepo, instanceRepo, taskRepo, exceptionRepo, logRepo, eng)
+	retryScheduler := retry.NewRetryScheduler(exceptionRepo, eng, cfg.Retry.DefaultInterval)
+	retryScheduler.Start()
+
+	h := handler.NewHandler(flowRepo, instanceRepo, taskRepo, exceptionRepo, logRepo, eng, retryScheduler)
 
 	r := gin.Default()
 
@@ -63,11 +67,14 @@ func main() {
 		{
 			transactions.POST("", h.StartTransaction)
 			transactions.GET("/:id", h.GetTransaction)
+			transactions.POST("/:id/retry", h.RetryTransaction)
 		}
 
 		exceptions := v1.Group("/exceptions")
 		{
 			exceptions.GET("", h.ListExceptions)
+			exceptions.POST("/:id/handle", h.HandleException)
+			exceptions.POST("/:id/retry", h.RetryException)
 		}
 	}
 
@@ -84,5 +91,6 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
+	retryScheduler.Stop()
 	log.Println("server shutdown")
 }

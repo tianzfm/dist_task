@@ -8,18 +8,20 @@ import (
 	"dist_task/internal/engine"
 	"dist_task/internal/model"
 	"dist_task/internal/repository"
+	"dist_task/internal/retry"
 	"dist_task/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 )
 
 type Handler struct {
-	flowRepo      *repository.FlowRepository
-	instanceRepo  *repository.InstanceRepository
-	taskRepo      *repository.TaskRepository
-	exceptionRepo *repository.ExceptionRepository
-	logRepo       *repository.LogRepository
-	engine        *engine.Engine
+	flowRepo       *repository.FlowRepository
+	instanceRepo   *repository.InstanceRepository
+	taskRepo       *repository.TaskRepository
+	exceptionRepo  *repository.ExceptionRepository
+	logRepo        *repository.LogRepository
+	engine         *engine.Engine
+	retryScheduler *retry.RetryScheduler
 }
 
 func NewHandler(
@@ -29,14 +31,16 @@ func NewHandler(
 	exceptionRepo *repository.ExceptionRepository,
 	logRepo *repository.LogRepository,
 	eng *engine.Engine,
+	retryScheduler *retry.RetryScheduler,
 ) *Handler {
 	return &Handler{
-		flowRepo:      flowRepo,
-		instanceRepo:  instanceRepo,
-		taskRepo:      taskRepo,
-		exceptionRepo: exceptionRepo,
-		logRepo:       logRepo,
-		engine:        eng,
+		flowRepo:       flowRepo,
+		instanceRepo:   instanceRepo,
+		taskRepo:       taskRepo,
+		exceptionRepo:  exceptionRepo,
+		logRepo:        logRepo,
+		engine:         eng,
+		retryScheduler: retryScheduler,
 	}
 }
 
@@ -246,6 +250,111 @@ func (h *Handler) HealthCheck(c *gin.Context) {
 		"code":    0,
 		"message": "success",
 		"data":    gin.H{"status": "ok"},
+	})
+}
+
+func (h *Handler) RetryTransaction(c *gin.Context) {
+	id := c.Param("id")
+
+	instance, err := h.instanceRepo.GetByID(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "instance not found"})
+		return
+	}
+
+	if instance.Status != "failed" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "only failed transactions can be retried"})
+		return
+	}
+
+	flow, err := h.flowRepo.GetByID(instance.FlowID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "flow not found"})
+		return
+	}
+
+	instance.Status = "pending"
+	h.instanceRepo.Update(instance)
+
+	go func() {
+		ctx := c.Request.Context()
+		if err := h.engine.Execute(ctx, instance, flow, map[string]interface{}{}); err != nil {
+			logger.Error().Err(err).Str("instance_id", id).Msg("retry transaction failed")
+		}
+	}()
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"instance_id": id,
+			"status":      "pending",
+		},
+	})
+}
+
+func (h *Handler) HandleException(c *gin.Context) {
+	id := c.Param("id")
+
+	var req struct {
+		Remark string `json:"remark"`
+	}
+	c.ShouldBindJSON(&req)
+
+	exception, err := h.exceptionRepo.GetByID(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "exception not found"})
+		return
+	}
+
+	now := time.Now()
+	exception.Handled = true
+	exception.HandledAt = &now
+	exception.HandledRemark = req.Remark
+	h.exceptionRepo.Update(exception)
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"exception_id": id,
+			"handled":      true,
+		},
+	})
+}
+
+func (h *Handler) RetryException(c *gin.Context) {
+	id := c.Param("id")
+
+	exception, err := h.exceptionRepo.GetByID(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "exception not found"})
+		return
+	}
+
+	if exception.Handled {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "handled exception cannot be retried"})
+		return
+	}
+
+	if exception.RetryStrategy == "no_retry" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "this exception is configured to not retry"})
+		return
+	}
+
+	now := time.Now()
+	nextAt := now.Add(time.Duration(exception.RetryInterval) * time.Second)
+	exception.RetryNextAt = &nextAt
+	h.exceptionRepo.Update(exception)
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"exception_id":    id,
+			"retry_scheduled": true,
+			"retry_next_at":   nextAt,
+		},
 	})
 }
 

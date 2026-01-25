@@ -261,3 +261,83 @@ func resolvePlaceholder(config string, params map[string]interface{}) string {
 	}
 	return config
 }
+
+func (e *Engine) RetryTask(ctx context.Context, instance *model.TaskGroupInstance, flow *model.TaskGroupFlow, taskName string, taskConfig string) error {
+	taskDef, err := taskdef.GetTaskDefinition(taskName)
+	if err != nil {
+		return err
+	}
+
+	if taskDef == nil {
+		return fmt.Errorf("task definition not found: %s", taskName)
+	}
+
+	taskID := fmt.Sprintf("%s_retry_%d", instance.ID, time.Now().UnixNano())
+	now := time.Now()
+
+	taskRecord := &model.DistTask{
+		ID:         taskID,
+		GroupID:    instance.ID,
+		Name:       taskDef.Name,
+		Type:       taskDef.Type,
+		Status:     "running",
+		MaxRetry:   3,
+		RetryCount: 1,
+		StartedAt:  &now,
+		Config:     taskConfig,
+	}
+
+	if err := e.taskRepo.Create(taskRecord); err != nil {
+		return err
+	}
+
+	e.logRepo.Create(&model.ExecutionLog{
+		TaskID:  taskRecord.ID,
+		GroupID: instance.ID,
+		Action:  "retry",
+		Message: fmt.Sprintf("retrying task %s", taskName),
+	})
+
+	logger.Info().Str("task_id", taskRecord.ID).Str("task_name", taskName).Msg("task retry started")
+
+	taskExecutor, err := e.executorFactory.Create(taskDef.Type)
+	if err != nil {
+		taskRecord.Status = "failed"
+		taskRecord.ErrorMessage = err.Error()
+		e.taskRepo.Update(taskRecord)
+		return err
+	}
+
+	taskConfigBytes, _ := json.Marshal(taskDef.Config)
+
+	if err := taskExecutor.Execute(ctx, taskConfigBytes, map[string]interface{}{}); err != nil {
+		taskRecord.Status = "failed"
+		taskRecord.ErrorMessage = err.Error()
+		e.taskRepo.Update(taskRecord)
+
+		e.logRepo.Create(&model.ExecutionLog{
+			TaskID:  taskRecord.ID,
+			GroupID: instance.ID,
+			Action:  "failed",
+			Message: err.Error(),
+		})
+
+		return err
+	}
+
+	completedAt := time.Now()
+	taskRecord.Status = "success"
+	taskRecord.CompletedAt = &completedAt
+	e.taskRepo.Update(taskRecord)
+
+	e.logRepo.Create(&model.ExecutionLog{
+		TaskID:  taskRecord.ID,
+		GroupID: instance.ID,
+		Action:  "success",
+		Message: "retry completed",
+	})
+
+	logger.Info().Str("task_id", taskRecord.ID).Str("task_name", taskName).Msg("task retry completed")
+
+	return nil
+}

@@ -3,6 +3,7 @@ package repository
 import (
 	"dist_task/internal/model"
 	"dist_task/pkg/logger"
+	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -140,6 +141,34 @@ func (r *ExceptionRepository) List(offset, limit int, handled *bool) ([]model.Ex
 
 func (r *ExceptionRepository) Update(exception *model.ExceptionRecord) error {
 	return db.Save(exception).Error
+}
+
+func (r *ExceptionRepository) GetByID(id string) (*model.ExceptionRecord, error) {
+	var exception model.ExceptionRecord
+	if err := db.First(&exception, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &exception, nil
+}
+
+func (r *ExceptionRepository) GetPendingRetry() ([]model.ExceptionRecord, error) {
+	var exceptions []model.ExceptionRecord
+	err := db.Where("retry_strategy = ? AND handled = ? AND retry_times < retry_max", "auto", false).
+		Where("retry_next_at <= ? OR retry_next_at IS NULL", time.Now()).
+		Order("retry_next_at ASC").
+		Find(&exceptions).Error
+	if err != nil {
+		return nil, err
+	}
+	return exceptions, nil
+}
+
+func (r *ExceptionRepository) IncrementRetry(id string) error {
+	return db.Exec("UPDATE exception_record SET retry_times = retry_times + 1, retry_next_at = DATE_ADD(NOW(), INTERVAL retry_interval SECOND) WHERE id = ?", id).Error
+}
+
+func (r *ExceptionRepository) MarkRetryComplete(id string) error {
+	return db.Exec("UPDATE exception_record SET retry_times = retry_max WHERE id = ?", id).Error
 }
 
 type LogRepository struct{}
