@@ -10,6 +10,7 @@ import (
 	"dist_task/internal/api/handler"
 	"dist_task/internal/config"
 	"dist_task/internal/engine"
+	"dist_task/internal/engine/executor"
 	"dist_task/internal/repository"
 	"dist_task/pkg/logger"
 
@@ -36,7 +37,12 @@ func main() {
 	exceptionRepo := &repository.ExceptionRepository{}
 	logRepo := &repository.LogRepository{}
 
-	eng := engine.NewEngine(instanceRepo, taskRepo, exceptionRepo, logRepo)
+	executorFactory, err := executor.NewExecutorFactory(repository.GetDB())
+	if err != nil {
+		log.Fatalf("create executor factory failed: %v", err)
+	}
+
+	eng := engine.NewEngine(instanceRepo, taskRepo, exceptionRepo, logRepo, executorFactory)
 
 	h := handler.NewHandler(flowRepo, instanceRepo, taskRepo, exceptionRepo, logRepo, eng)
 

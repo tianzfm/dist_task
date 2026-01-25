@@ -1,4 +1,4 @@
-package engine
+package taskdef
 
 import "encoding/json"
 
@@ -76,6 +76,15 @@ func (t *TaskDefinition) GetInputFieldsJSON() string {
 	return string(data)
 }
 
+type ParseError struct {
+	Field  string
+	Reason string
+}
+
+func (e *ParseError) Error() string {
+	return "parse error: " + e.Reason + " for field " + e.Field
+}
+
 func ParseTaskInput(inputSchema []Field, params map[string]interface{}) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 	for _, field := range inputSchema {
@@ -89,13 +98,4 @@ func ParseTaskInput(inputSchema []Field, params map[string]interface{}) (map[str
 		result[field.Name] = value
 	}
 	return result, nil
-}
-
-type ParseError struct {
-	Field  string
-	Reason string
-}
-
-func (e *ParseError) Error() string {
-	return "parse error: " + e.Reason + " for field " + e.Field
 }

@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"dist_task/internal/engine/executor"
 	"dist_task/internal/model"
 	"dist_task/internal/repository"
 	"dist_task/pkg/logger"
+	"dist_task/pkg/taskdef"
 )
 
 type FlowTask struct {
@@ -28,10 +30,11 @@ type FlowDefinition struct {
 }
 
 type Engine struct {
-	instanceRepo  *repository.InstanceRepository
-	taskRepo      *repository.TaskRepository
-	exceptionRepo *repository.ExceptionRepository
-	logRepo       *repository.LogRepository
+	instanceRepo    *repository.InstanceRepository
+	taskRepo        *repository.TaskRepository
+	exceptionRepo   *repository.ExceptionRepository
+	logRepo         *repository.LogRepository
+	executorFactory *executor.ExecutorFactory
 }
 
 func NewEngine(
@@ -39,12 +42,14 @@ func NewEngine(
 	taskRepo *repository.TaskRepository,
 	exceptionRepo *repository.ExceptionRepository,
 	logRepo *repository.LogRepository,
+	executorFactory *executor.ExecutorFactory,
 ) *Engine {
 	return &Engine{
-		instanceRepo:  instanceRepo,
-		taskRepo:      taskRepo,
-		exceptionRepo: exceptionRepo,
-		logRepo:       logRepo,
+		instanceRepo:    instanceRepo,
+		taskRepo:        taskRepo,
+		exceptionRepo:   exceptionRepo,
+		logRepo:         logRepo,
+		executorFactory: executorFactory,
 	}
 }
 
@@ -71,7 +76,7 @@ func (e *Engine) Execute(ctx context.Context, instance *model.TaskGroupInstance,
 		wg.Add(1)
 		go func(t FlowTask) {
 			defer wg.Done()
-			if err := e.executeTask(ctx, instance.ID, &t, taskMap, instance.FlowID); err != nil {
+			if err := e.executeTask(ctx, instance.ID, &t, taskMap); err != nil {
 				errCh <- err
 			}
 		}(flowDefinition.Tasks[i])
@@ -87,13 +92,19 @@ func (e *Engine) Execute(ctx context.Context, instance *model.TaskGroupInstance,
 	}
 
 	instance.Status = "success"
+	now := time.Now()
+	instance.CompletedAt = &now
 	return e.instanceRepo.Update(instance)
 }
 
-func (e *Engine) executeTask(ctx context.Context, groupID string, task *FlowTask, taskMap map[string]*FlowTask, flowID string) error {
-	taskDef, err := GetTaskDefinition(task.TaskName)
+func (e *Engine) executeTask(ctx context.Context, groupID string, task *FlowTask, taskMap map[string]*FlowTask) error {
+	taskDef, err := taskdef.GetTaskDefinition(task.TaskName)
 	if err != nil {
 		return err
+	}
+
+	if taskDef == nil {
+		return fmt.Errorf("task definition not found: %s", task.TaskName)
 	}
 
 	now := time.Now()
@@ -105,6 +116,7 @@ func (e *Engine) executeTask(ctx context.Context, groupID string, task *FlowTask
 		Status:    "running",
 		MaxRetry:  3,
 		StartedAt: &now,
+		Config:    string(task.Config),
 	}
 
 	if err := e.taskRepo.Create(taskRecord); err != nil {
@@ -120,7 +132,81 @@ func (e *Engine) executeTask(ctx context.Context, groupID string, task *FlowTask
 
 	logger.Info().Str("task_id", taskRecord.ID).Str("task_name", task.TaskName).Msg("task started")
 
+	taskExecutor, err := e.executorFactory.Create(taskDef.Type)
+	if err != nil {
+		taskRecord.Status = "failed"
+		taskRecord.ErrorMessage = err.Error()
+		e.taskRepo.Update(taskRecord)
+		return err
+	}
+
+	taskConfig, _ := json.Marshal(taskDef.Config)
+	mergedConfig := e.mergeConfig(taskConfig, task.Config)
+
+	if err := taskExecutor.Execute(ctx, mergedConfig, map[string]interface{}{}); err != nil {
+		taskRecord.Status = "failed"
+		taskRecord.ErrorMessage = err.Error()
+		e.taskRepo.Update(taskRecord)
+
+		e.exceptionRepo.Create(&model.ExceptionRecord{
+			GroupID:       groupID,
+			GroupName:     task.Description,
+			TaskID:        taskRecord.ID,
+			TaskName:      task.TaskName,
+			ErrorType:     1,
+			ErrorMessage:  err.Error(),
+			RetryStrategy: "manual",
+			OccurredAt:    time.Now(),
+		})
+
+		e.logRepo.Create(&model.ExecutionLog{
+			TaskID:  taskRecord.ID,
+			GroupID: groupID,
+			Action:  "failed",
+			Message: err.Error(),
+		})
+
+		return err
+	}
+
+	completedAt := time.Now()
+	taskRecord.Status = "success"
+	taskRecord.CompletedAt = &completedAt
+	e.taskRepo.Update(taskRecord)
+
+	e.logRepo.Create(&model.ExecutionLog{
+		TaskID:  taskRecord.ID,
+		GroupID: groupID,
+		Action:  "success",
+		Message: "task completed",
+	})
+
+	logger.Info().Str("task_id", taskRecord.ID).Str("task_name", task.TaskName).Msg("task completed")
+
 	return nil
+}
+
+func (e *Engine) mergeConfig(baseConfig []byte, taskConfig json.RawMessage) []byte {
+	if len(taskConfig) == 0 {
+		return baseConfig
+	}
+
+	var base map[string]interface{}
+	var task map[string]interface{}
+
+	json.Unmarshal(baseConfig, &base)
+	json.Unmarshal(taskConfig, &task)
+
+	if base == nil {
+		base = make(map[string]interface{})
+	}
+
+	for k, v := range task {
+		base[k] = v
+	}
+
+	result, _ := json.Marshal(base)
+	return result
 }
 
 func resolvePlaceholder(config string, params map[string]interface{}) string {
