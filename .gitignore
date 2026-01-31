@@ -6,8 +6,15 @@ bin/
 *.so
 *.dylib
 
-# Test coverage
-*.coverprofile
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# Go workspace
+go.work
+go.work.sum
 
 # IDE
 .idea/
@@ -15,13 +22,21 @@ bin/
 *.swp
 *.swo
 
-# OS
-.DS_Store
-Thumbs.db
+# Config
+configs/*.toml
+!configs/app.toml.example
 
 # Logs
 *.log
 
-# Config
-configs/*.toml
-!configs/app.example.toml
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.sql
+
+# Temp files
+*.tmp
+*.temp

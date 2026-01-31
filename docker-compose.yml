@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  dist_task:
+    build: .
+    container_name: dist_task
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs/app.toml:/app/configs/app.toml:ro
+      - dist_task_data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+    depends_on:
+      - mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  mysql:
+    image: mysql:8.0
+    container_name: dist_task_mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: dist_task
+      MYSQL_CHARSET: utf8mb4
+      MYSQL_COLLATION: utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./migrations/001_init_schema.sql:/docker-entrypoint-initdb.d/001_init_schema.sql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot123"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Optional: Adminer for database management
+  adminer:
+    image: adminer
+    container_name: dist_task_adminer
+    ports:
+      - "8081:8080"
+    depends_on:
+      - mysql
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  dist_task_data:
+
+networks:
+  default:
+    name: dist_task_network
