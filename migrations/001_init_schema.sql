@@ -64,7 +64,7 @@ CREATE TABLE exception_record (
     handled_at TIMESTAMP NULL,
     handled_remark TEXT,
     occurred_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_group_status (group_id, status),
+    INDEX idx_group_id (group_id),
     INDEX idx_retry_strategy (retry_strategy, handled)
 );
 

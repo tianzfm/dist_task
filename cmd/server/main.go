@@ -19,7 +19,15 @@ import (
 )
 
 func main() {
-	cfgPath := "configs/app.toml"
+	cfgPath := "./configs/app.toml"
+	// Try to find config in current directory or parent directories
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		// Try to find config relative to executable or current working directory
+		if execPath, err := os.Getwd(); err == nil {
+			cfgPath = execPath + "/configs/app.toml"
+		}
+	}
+
 	if envPath := os.Getenv("CONFIG_PATH"); envPath != "" {
 		cfgPath = envPath
 	}

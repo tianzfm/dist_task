@@ -1,7 +1,10 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
+
+# Set Go proxy for faster downloads in China
+ENV GOPROXY=https://goproxy.cn,direct
 
 # Copy go mod and sum files
 COPY go.mod go.sum ./
@@ -16,7 +19,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o server ./cmd/server/
 
 # Production stage
-FROM alpine:latest
+FROM alpine:3.18
 
 RUN apk --no-cache add ca-certificates tzdata
 
